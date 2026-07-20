@@ -173,7 +173,10 @@ def get_fsdp_model(
     # only finetune LoRA parameters and freeze before wrapping
     if args.lora.enable and not args.full_finetuning:
         for name, param in model.named_parameters():
-            if "lora" in name:
+            # Optionally keep attention LoRA frozen (lora_B stays at zero init ->
+            # zero delta), so only MLP/gating/depformer linears adapt.
+            is_attn_lora = "self_attn" in name
+            if "lora" in name and not (args.lora.freeze_attention and is_attn_lora):
                 param.requires_grad = True
             elif args.lora.ft_embed and "emb" in name:
                 param.requires_grad = True

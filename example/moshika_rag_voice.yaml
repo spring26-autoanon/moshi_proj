@@ -12,11 +12,15 @@ data:
 
 # ---- model: train the LoRA against the EXACT weights moshi-rag serves ----
 moshi_paths:
-  hf_repo_id: "kyutai/moshika-rag-pytorch-bf16"
-  # REQUIRED so the moshika-rag architecture is used (args.py:58-63 warns that
-  # hf_repo_id without config_path "loads default models"). Download the repo's
-  # config.json in Phase 0, or point at the stripped copy if the smoke test fails.
-  config_path: "checkpoints/moshika-rag/config.json"
+  # Path B: train on PLAIN moshika (the non-RAG base moshika-rag is built on).
+  # moshika-rag itself isn't trainable in this repo (see pyproject.toml note), so
+  # we imprint the voice on the shared transformer/depformer layers here, then
+  # apply the adapter to moshika-rag at serve time via --lora-weight.
+  hf_repo_id: "kyutai/moshika-pytorch-bf16"
+  # No config_path: plain moshika ships no config.json and uses moshi's built-in
+  # default LM architecture (same as moshiko, different voice weights). The
+  # "loads default models" warning from args.py:58-63 is expected and correct here.
+  # moshi_path / mimi_path / tokenizer_path: leave unset -> pulled from hf_repo_id.
   # moshi_path / mimi_path / tokenizer_path: leave unset -> pulled from hf_repo_id.
 
 full_finetuning: false

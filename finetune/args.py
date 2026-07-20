@@ -13,6 +13,12 @@ class LoraArgs(Serializable):
     rank: int = 64
     scaling: float = 2.0
     ft_embed: bool = False
+    # If True, LoRA is applied to MLP/gating/depformer linears only; attention
+    # (self_attn in_projs/out_projs) LoRA is frozen at its zero init -> attention
+    # is not adapted. Makes the adapter cross-moshi-version compatible with
+    # moshika-rag (whose attention naming differs) and leaves turn-taking (an
+    # attention/temporal behavior) closer to the base model. See NEXT_STEPS.md.
+    freeze_attention: bool = False
 
     def __post_init__(self) -> None:
         if self.enable:

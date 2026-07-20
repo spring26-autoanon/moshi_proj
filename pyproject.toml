@@ -11,13 +11,16 @@ dependencies = [
   "safetensors",
   "tensorboard",
   "tqdm",
-  "torch==2.6",
+  # Fork stack (moshi 0.2.13). We train on PLAIN moshika under the moshi-rag fork so
+  # the adapter uses the SAME attention naming as moshika-rag (fused in_proj_weight)
+  # and overlays cleanly at serve time. The fork's earlier crash was the moshika-rag
+  # RAG ARC-encoder conditioner; plain moshika has no conditioners, so it's avoided.
+  # Mainline 0.2.4a1 (git@061cc4c) also trains plain moshika but its per-step attention
+  # (in_projs.N) makes the adapter HALF-incompatible with moshika-rag — see NEXT_STEPS.md.
+  "torch==2.9.1",
   "triton>=3.2",
-  # "git+https://git@github.com/kyutai-labs/moshi.git#egg=moshi&subdirectory=moshi",
-  # We could also use [tool.uv.sources] to point to the git repo, but this maintains
-  # compatibility with `pip install -e .`
-  "moshi @ git+https://github.com/kyutai-labs/moshi.git#subdirectory=moshi",
-  "sphn==0.1.12",
+  "moshi @ git+https://github.com/kyutai-labs/moshi-rag.git#subdirectory=moshi",
+  "sphn>=0.2.0,<0.3.0",
   "auditok==0.2",
   "whisper_timestamped",
   "huggingface_hub",
@@ -44,6 +47,13 @@ dev = [
 # The following fixes Pylance/VSCode not seeing the `finetune` package. See
 # https://github.com/astral-sh/uv/issues/3898
 config-settings = { editable_mode = "compat" }
+
+# openai-whisper (pulled in by whisper_timestamped) imports pkg_resources at
+# build time. setuptools >=81 no longer ships pkg_resources, so the default
+# build env fails with ModuleNotFoundError. Pin an older setuptools that still
+# bundles it into openai-whisper's build environment.
+[tool.uv.extra-build-dependencies]
+openai-whisper = ["setuptools<81"]
 
 [tool.setuptools]
 packages = ["finetune"]
