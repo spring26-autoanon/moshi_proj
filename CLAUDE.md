@@ -1,5 +1,22 @@
 # CLAUDE.md — moshi-finetune → moshi-rag voice LoRA
 
+## ⚠️ CURRENT STATUS — read `NEXT_STEPS.md` first (updated 2026-07-20)
+`NEXT_STEPS.md` is the live source of truth; parts of the original plan below are
+superseded. Quick state:
+- **Voice cloning works.** First run (full LoRA on **plain moshika**, mainline moshi)
+  cloned the voice, but **monologued / ignored the user** (turn-taking broken).
+- **Root cause:** the data is monologue with a **silent user channel** (Option A), so the
+  model learned the user never speaks. Voice AND turn-taking both live in the **attention**
+  layers (proven by a freeze-attention experiment), so the fix is **data**, not a layer trick.
+- **Can't fine-tune moshika-rag directly** — the trainer needs the moshi-rag fork, which
+  crashes on the RAG ARC-encoder. **Path B is what we use:** train on plain moshika, apply to
+  moshika-rag at serve time.
+- **Verified:** training under the **fork** (moshi 0.2.13, now pinned in `pyproject.toml`) on
+  plain moshika wraps attention and produces a moshika-rag-**compatible** adapter.
+- **Next:** record 2-speaker **dialogue** data (her isolated left / partner right), rewrite
+  `prepare_stereo.py`, retrain full LoRA under the fork, then serve (patch `get_lora_moshi`
+  meta bug for the moshi-rag stack). Full detail + recording spec in `NEXT_STEPS.md`.
+
 ## Goal
 Fine-tune a **LoRA adapter** that makes Moshi speak with the **voice and conversational
 personality** of the recordings in `finetune/data/datastereo/`, and use that adapter with
