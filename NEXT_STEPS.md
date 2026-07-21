@@ -14,6 +14,13 @@ Part 1). Adding it to the full moshi-rag stack is a separate, heavier step
 (Part 3) and should come only after the voice converses well on plain
 `moshi.server`.
 
+**Beyond Path B — the exact-voice + exact-retrieval roadmap is now Part 4.** Path B
+(overlay a plain-moshika adapter onto moshika-rag) works but is an *approximation*
+(measured attention drift 0.0547 — see `scripts/compare_attention.py`). The exact
+route is **Path A (train on moshika-rag directly) + synthetic replay data**, staged
+0→3 in Part 4. Do Path B first (it works today); pursue Part 4 only if the overlay
+audibly smears voice or retrieval.
+
 ---
 
 ## Part 1 — Data for the next (interactive) run
@@ -200,3 +207,92 @@ meta-tensor bug (below) — a code patch, not an architecture problem.
 
 Also: the moshika-rag ARC encoder needs gated `meta-llama/Llama-3.2-3B-Instruct`
 (request HF access) for real serving.
+
+## Part 4 — Roadmap: exact voice + exact retrieval (Path A + replay data)
+
+**When to reach for this:** only if Path B's overlay audibly degrades voice or
+retrieval. Path B works today with zero new training-code; Part 4 is the heavier,
+*exact* alternative. See `scripts/compare_attention.py` — moshika-rag's attention
+drifted only **0.0547 median** from plain moshika, so Path B will *probably* sound
+fine. Part 4 is the fallback + the "both truly exact" ceiling.
+
+### Why Path B is only an approximation
+Path B serves `W_r + ΔW` where `ΔW` was trained against plain moshika `W_m`, not
+`W_r`. A LoRA is calibrated to the base it trained on, so applying it to a different
+base is only approximate. Voice AND retrieval-*integration* both live in the shared
+attention (`in_projs.N`), so the overlaid `ΔW` can mildly perturb retrieval. The
+exact fix = train `ΔW` against `W_r` directly (Path A).
+
+### The load-bearing data principle (why replay is required)
+- **Conditioner WEIGHTS never get lost.** Weights only change when trained. The 5
+  RAG-only tensors (`reference_with_time`, `fuser`, `rag_token_id` = the retrieval
+  *ingestion* machinery) are never LoRA-wrapped — `wrapped_model.py:174-184` only
+  trains params named `"lora"` on `self_attn`/MLP; everything else stays
+  `requires_grad=False`. Preserved bit-for-bit in BOTH paths.
+- **But the model can learn to IGNORE conditioning** if training data contains no
+  retrieval — the exact same failure as the silent-user-channel monologuing bug
+  (omitted behavior → forgotten). Voice-only Path A *actively* trains "conditioning
+  is uninformative" (conditioners present but fed null every step), so it can degrade
+  retrieval **more** than Path B, which never trains that lesson.
+- **Replay data is the only thing that keeps retrieval in the loss** — analogous to
+  how 2-speaker dialogue data is the fix for turn-taking (Part 1). Not optional.
+
+### Staged plan
+**Stage 0 — Unblock Path A (prerequisite; pure engineering, not a config change).**
+- Patch the meta-init crash: the ARC-encoder builds on the `meta` device →
+  `unsupported autocast device_type 'meta'`; and `get_lora_moshi`
+  (`moshi/models/loaders.py` ~560) does `model.to(device)` on a meta model →
+  `Cannot copy out of meta tensor`. Fix = `to_empty()` + weight load, materialize
+  conditioners on a real device, drop autocast-on-meta. **Pinpoint the exact lines
+  against the fork checkout ON THE A100** (moshi isn't installed on the mac).
+- Get gated `meta-llama/Llama-3.2-3B-Instruct` access (ARC-encoder dependency).
+- Wire **null/neutral conditioning** through the training forward pass; freeze the
+  conditioners (LoRA only on transformer attention+MLP).
+- Config: `hf_repo_id` = moshika-rag, `config_path` = the **full** moshika-rag
+  `config.json` (conditioners live — do NOT strip).
+- Milestone: builds + steps cleanly on the RAG architecture.
+
+**Stage 1 — Path A voice-only run.**
+- Purpose: prove the RAG-arch trainer runs + get **exact** voice.
+- ⚠️ **JUDGE VOICE ONLY.** Retrieval is worst-case here by design (trained to ignore
+  conditioning) — expected, not a failure. This run establishes the *retrieval floor*
+  (good writeup baseline: how bad retrieval gets with zero replay).
+
+**Stage 2 — Synthesize replay data (can start NOW, in parallel — use the existing
+`checkpoint_000300` clone as the TTS voice; not gated on Stage 1).**
+Per example (reconstructs moshika-rag's serve-time forward):
+- User question (ch1) that *requires* external knowledge.
+- The retrieved passage = ground-truth reference.
+- Assistant answer (ch0, **her voice**, faithful to the passage) + `SPEAKER_MAIN`
+  alignments.
+- Conditioning rebuilt by running the passage through **moshika-rag's OWN reference
+  encoder** → `reference_with_time` + `rag_token` (so train == serve, no skew).
+
+Pipeline: pick corpus = **the deployment retrieval corpus** (coverage = retrieval
+ceiling) → LLM generates grounded QA → conversationalize into multi-turn dialogue
+with **real interruptions/overlap** (turn-taking, per Part 1) → render to speech
+(assistant = her-voice TTS anchored with a few real recordings; user = varied voices;
+time-align stereo her=L/partner=R) → rebuild conditioning via the real reference
+encoder → add **hard/negative cases** (irrelevant passage → decline/no-hallucinate,
+multi-passage pick-the-right-one, no-retrieval turns) → **faithfulness filter**
+(LLM-judge drops any answer not supported by its passage). Mix with pure her-voice
+dialogue; ratio (~50/50 start) is the voice-vs-retrieval dial.
+
+**Stage 3 — Path A retrain on the mix (voice dialogue + replay).**
+- The real deliverable. Train a **fresh** LoRA on the mixed set (don't continue
+  Stage 1 — you want retrieval in the loss from step 0).
+- Judge **BOTH** voice and retrieval (retrieval probe: ask something only the corpus
+  supplies).
+
+### Ceiling honesty
+"Exact + exact" is a **Pareto** optimum, not literal double-100%: capped by (a) the
+shared-capacity compromise (voice and retrieval share attention), (b) replay
+**coverage** → match the deployment corpus to collapse this, (c) LoRA **rank** →
+raise it if both don't fit. Near-perfect-both is achievable; literal-perfect-both is
+a category error.
+
+### Dependency chain
+Exact voice first → that cloned model is the TTS voice for the replay set → retrain.
+(The existing Path B clone can bootstrap Stage 2 now, so data-gen isn't gated on
+Stage 0/1.) Companion diagram of the Path B mechanism (fused/unfused attention, why
+the fork): artifact `pathb-fork-lora` (published 2026-07-20).
